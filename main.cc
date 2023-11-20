@@ -8,8 +8,12 @@
 #include <functional>
 
 #include <fcntl.h>
+#include <format>
 
 #include <liburing.h>
+
+#include "resumable.hh"
+#include "file_descriptor.hh"
 
 /**
  *
@@ -18,6 +22,7 @@
  * auto buf = std::array<128>{};
  * read_count = co_await io.enqueue(READ, client, buf)
  *
+ * TODO: Create FD
  */
 
 namespace cong {
@@ -40,25 +45,11 @@ namespace cong {
 
     }
 
-    struct resumable
-    {
-        struct promise_type
-        {
-            constexpr auto initial_suspend() const noexcept -> std::suspend_never { return {}; }
-            constexpr auto final_suspend() const noexcept -> std::suspend_never { return {}; }
-            constexpr auto return_void() const noexcept -> std::suspend_always { return {}; }
-            constexpr auto get_return_object() const noexcept -> resumable { return {}; }
-            constexpr auto unhandled_exception() const noexcept -> void {}
-        };
-    };
-
-    template<std::size_t Size>
     class io_t
     {
     public:
-        static constexpr auto size = Size;
-
-        static auto make_io_t(int flags) noexcept
+        [[nodiscard]]
+        static auto make_io_t(std::size_t size, int flags) noexcept
             -> std::expected<io_t, std::error_code>
         {
             auto io = io_t{};
@@ -74,30 +65,19 @@ namespace cong {
             return helpers::try_call_with_negative_r(io_uring_wait_cqe, &ring_, &cqe)
                 .and_then([&](auto) -> std::expected<void, std::error_code>
                 {
+                    --queued_;
                     auto const status = cqe->res;
-                    auto delegate = reinterpret_cast<void(*)()>(io_uring_cqe_get_data(cqe));
+                    auto const coro = std::coroutine_handle<>::from_address(io_uring_cqe_get_data(cqe));
                     io_uring_cqe_seen(&ring_, cqe);
 
                     if (status < 0) {
                         return std::unexpected{std::error_code{-status, std::system_category()}};
                     }
 
-                    std::invoke(delegate);
+                    coro();
 
                     return {};
                 });
-        }
-
-        /// TODO: Create FD
-        [[nodiscard]]
-        auto enqueue_read(int fd, std::byte* dst, std::size_t len, std::size_t offset, std::invocable auto&& delegate) noexcept
-            -> std::expected<std::size_t, std::error_code>
-        {
-            return retrieve_submission_entry().and_then([&](auto* sqe){
-                io_uring_prep_read(sqe, fd, dst, len, offset);
-                io_uring_sqe_set_data(sqe, reinterpret_cast<void*>(static_cast<void(*)()>(delegate)));
-                return submit();
-            });
         }
 
         [[nodiscard]]
@@ -112,14 +92,13 @@ namespace cong {
 
                 constexpr auto await_suspend(std::coroutine_handle<> cont) const noexcept -> void {
                     std::cout << "await_suspend\n";
-                    static auto cont_ = cont;
-                    io_.enqueue_read(fd, dst, len, offset, [](){
-                        std::cout << "await_suspend done\n";
-                        cont_();
-                    });
+                    io_.enqueue_read_impl(fd, dst, len, offset, cont);
                 };
 
-                constexpr auto await_resume() const noexcept -> void {};
+                constexpr auto await_resume() const noexcept -> void
+                {
+                    std::cout << "await_resume\n";
+                };
 
                 /// TODO: Make private
                 io_t& io_;
@@ -149,12 +128,18 @@ namespace cong {
         io_t& operator=(io_t && other) noexcept
         {
             ring_ = std::exchange(other.ring_, io_t{}.ring_);
+            return *this;
         }
+
+        [[nodiscard]]
+        auto queued() const noexcept -> std::size_t { return queued_; }
+
     private:
 
         explicit io_t() noexcept = default;
 
         io_uring ring_{ .ring_fd = -1 };
+        std::size_t queued_{};
 
         [[nodiscard]]
         auto retrieve_submission_entry() noexcept
@@ -173,13 +158,25 @@ namespace cong {
         auto submit() noexcept
             -> std::expected<std::size_t, std::error_code>
         {
+            ++queued_;
             return helpers::try_call_with_negative_r(io_uring_submit, &ring_);
+        }
+
+        [[nodiscard]]
+        auto enqueue_read_impl(int fd, std::byte* dst, std::size_t len, std::size_t offset, std::coroutine_handle<> coro) noexcept
+            -> std::expected<std::size_t, std::error_code>
+        {
+            return retrieve_submission_entry().and_then([&](auto* sqe){
+                io_uring_prep_read(sqe, fd, dst, len, offset);
+                io_uring_sqe_set_data(sqe, coro.address());
+                return submit();
+            });
         }
     };
 
 }
 
-auto read_stdin_twice(cong::io_t<4>& io) -> cong::resumable
+auto read_stdin_twice(cong::io_t& io) -> cong::resumable
 {
     auto buf = std::array<char, 64u>{};
 
@@ -193,18 +190,21 @@ auto read_stdin_twice(cong::io_t<4>& io) -> cong::resumable
 }
 
 int main() {
-    auto io = cong::io_t<4u>::make_io_t(0);
+    auto io = cong::io_t::make_io_t(4, 0);
     if (not io) {
-        std::cerr << "io_t: " << io.error().message() << '\n';
+        std::cerr << std::format("Failed to create IO object: {}", io.error().message());
         return io.error().value();
     }
 
+    /// TODO: We do not want this to execute immediately, but instead spawn noop event that executes it
     read_stdin_twice(*io);
 
-    auto const wait_res = io->wait();
-    if (not wait_res) {
-        std::cerr << "wait: " << wait_res.error().message() << '\n';
-        return wait_res.error().value();
+    while (io->queued())
+    {
+        if (auto const res = io->wait(); not res) {
+            std::cerr << "IO wait failed: " << res.error().message() << '\n';
+            return res.error().value();
+        }
     }
 
     return 0;

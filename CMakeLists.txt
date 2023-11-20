@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.27)
 project(cong)
 
-add_executable(cong main.cpp)
+add_executable(
+        cong
+        main.cc
+        file_descriptor.cc
+)
 
 target_compile_features(
         cong
