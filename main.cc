@@ -6,14 +6,16 @@
 #include <iostream>
 #include <utility>
 #include <functional>
+#include <format>
 
 #include <fcntl.h>
-#include <format>
 
 #include <liburing.h>
 
 #include "resumable.hh"
-#include "file_descriptor.hh"
+#include "resource.hh"
+
+using file_descriptor = cong::resource<int, int, close>;
 
 /**
  *
