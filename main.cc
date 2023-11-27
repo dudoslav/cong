@@ -12,10 +12,11 @@
 
 #include <liburing.h>
 
-#include "resumable.hh"
+#include "coro.hh"
+#include "unwrap.hh"
 #include "resource.hh"
 
-using file_descriptor = cong::resource<int, int, close>;
+using file_descriptor = cong::resource<int, decltype(close), close>;
 
 /**
  *
@@ -77,6 +78,11 @@ namespace cong {
                     }
 
                     coro();
+
+                    /// We cannot do this since coro is RAII and this would sometimes double free
+                    // if (coro.done()) {
+                    //     coro.destroy();
+                    // }
 
                     return {};
                 });
@@ -178,7 +184,7 @@ namespace cong {
 
 }
 
-auto read_stdin_twice(cong::io_t& io) -> cong::resumable
+auto read_stdin_twice(cong::io_t& io) -> cong::coro<void, std::error_code>
 {
     auto buf = std::array<char, 64u>{};
 
@@ -191,23 +197,32 @@ auto read_stdin_twice(cong::io_t& io) -> cong::resumable
     std::cout << "Second read: " << buf.data() << '\n';
 }
 
-int main() {
-    auto io = cong::io_t::make_io_t(4, 0);
-    if (not io) {
-        std::cerr << std::format("Failed to create IO object: {}", io.error().message());
-        return io.error().value();
-    }
+/// TODO: Make this expected not coro
+auto entry() -> cong::coro<void, std::error_code>
+{
+    auto io = co_await unwrap(cong::io_t::make_io_t(4, 999));
 
-    /// TODO: We do not want this to execute immediately, but instead spawn noop event that executes it
-    read_stdin_twice(*io);
+    /// We need to extend the lifetime of this. Maybe implement spawn on io_t so that it would hold its lifetime
+    /// Lets find out what spawned really means
+    auto reader = read_stdin_twice(io);
 
-    while (io->queued())
+    while (io.queued())
     {
-        if (auto const res = io->wait(); not res) {
-            std::cerr << "IO wait failed: " << res.error().message() << '\n';
-            return res.error().value();
-        }
+        /// io.wait() also runs all ready coroutines so it should be renamed to run I guess
+        co_await unwrap(io.wait());
+    }
+}
+
+auto main() -> int {
+    if (auto coro = entry(); coro.expected()) {
+        std::cerr << std::format(
+            "Error occured: {}\nAt: {}:{}:{}",
+            coro.expected().error().message(),
+            coro.source_location().file_name(),
+            coro.source_location().line(),
+            coro.source_location().function_name());
+        return coro.expected().error().value();
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }

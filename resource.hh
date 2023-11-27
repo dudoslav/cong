@@ -2,7 +2,7 @@
 
 namespace cong {
 
-template<typename T, typename R, R(*Deleter)(T)>
+template<typename T, typename DeleterT, DeleterT Deleter>
 class resource {
 public:
   using value_type = T;
@@ -26,7 +26,7 @@ public:
   ~resource() noexcept {
     if (handle_) {
       /// Sadly we can not use the return value
-      [[maybe_unused]] Deleter(*handle_);
+      static_cast<void>(Deleter(*handle_));
     }
   }
 
