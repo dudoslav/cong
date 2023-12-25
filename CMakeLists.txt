@@ -1,19 +1,12 @@
 cmake_minimum_required(VERSION 3.27)
+
+option(CONG_BUILD_TESTING "Enable tests" OFF)
+
 project(cong)
 
-add_executable(
-        cong
-        main.cc
-)
+add_subdirectory(src)
 
-target_compile_features(
-        cong
-        PRIVATE
-        cxx_std_23
-)
-
-target_link_libraries(
-        cong
-        PRIVATE
-        uring # TODO: This is not hermetic
-)
+if(CONG_BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(test)
+endif()
