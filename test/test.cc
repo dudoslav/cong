@@ -6,7 +6,13 @@
 #include <resource.hh>
 #include <utility.hh>
 
-auto read(cong::io_context &io) noexcept -> cong::io_routine {
+auto read(cong::io_context &io, cong::file_descriptor &fd,
+          std::span<char> out) noexcept -> cong::io_routine {
+  co_await io.read(fd, reinterpret_cast<std::byte *>(out.data()),
+                   out.size() - 1u, 0u);
+}
+
+auto process(cong::io_context &io) noexcept -> cong::io_routine {
   /// TODO: Make this non-relative
   auto fd =
       cong::try_call(open, "../../test/test.txt", 0u).transform([](auto fd) {
@@ -19,8 +25,9 @@ auto read(cong::io_context &io) noexcept -> cong::io_routine {
 
   REQUIRE(fd);
 
-  auto buffer = std::array<std::byte, 32>{};
-  co_await io.read(*fd, buffer.data(), buffer.size() - 1u, 0u);
+  auto buffer = std::array<char, 32>{};
+  // co_await io.read(*fd, buffer.data(), buffer.size() - 1u, 0u);
+  co_await read(io, *fd, buffer);
 
   REQUIRE(reinterpret_cast<char *>(buffer.data()) == std::string{"Land AHOY!"});
 
@@ -33,7 +40,8 @@ auto read(cong::io_context &io) noexcept -> cong::io_routine {
 
   REQUIRE(ofd);
 
-  co_await io.write(*ofd, buffer.data(), std::strlen(reinterpret_cast<char*>(buffer.data())), 0u);
+  co_await io.write(*ofd, reinterpret_cast<std::byte const *>(buffer.data()),
+                    std::strlen(reinterpret_cast<char *>(buffer.data())), 0u);
 
   co_return;
 }
@@ -44,7 +52,7 @@ TEST_CASE("Initialization", "[io_context]") {
   REQUIRE(io);
 
   /// TODO: cong::spawn(io, read);
-  io->spawn(read(*io));
+  io->spawn(process(*io));
 
   while (io->cq_count()) {
     io->execute();
