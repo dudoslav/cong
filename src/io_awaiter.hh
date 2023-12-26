@@ -13,6 +13,7 @@ public:
   auto await_ready() const noexcept -> bool { return false; }
 
   void await_suspend(std::coroutine_handle<> coroutine) const noexcept {
+    /// TODO: In the future remove this std::function...
     prepare_(coroutine.address());
   }
 

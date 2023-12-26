@@ -17,3 +17,5 @@ add_executable(tests test.cc)
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain cong)
 
 catch_discover_tests(tests)
+
+file(COPY test.txt DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
